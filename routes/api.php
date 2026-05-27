@@ -112,9 +112,10 @@ Route::prefix('mobile')->group(function () {
 
     // Protected with Sanctum token (customer tokenable)
     Route::middleware('auth:sanctum')->group(function () {
-        Route::post('auth/logout',    [CustomerMobileController::class, 'logout']);
-        Route::get('profile',         [CustomerMobileController::class, 'profile']);
-        Route::get('transactions',    [CustomerMobileController::class, 'transactions']);
-        Route::post('topup',          [CustomerMobileController::class, 'topup']);
+        Route::post('auth/logout',                                    [CustomerMobileController::class, 'logout']);
+        Route::get('profile',                                         [CustomerMobileController::class, 'profile']);
+        Route::get('transactions',                                    [CustomerMobileController::class, 'transactions']);
+        Route::post('topup',                                          [CustomerMobileController::class, 'topup']);
+        Route::get('topup/status/{checkoutRequestId}',                [CustomerMobileController::class, 'topupStatus']);
     });
 });

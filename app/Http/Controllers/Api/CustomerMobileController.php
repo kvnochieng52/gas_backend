@@ -4,12 +4,17 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
+use App\Models\Transaction;
 use App\Services\MpesaService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class CustomerMobileController extends Controller
 {
+    // ── Auth ─────────────────────────────────────────────────────────────────
+
     public function login(Request $request)
     {
         $request->validate([
@@ -17,11 +22,12 @@ class CustomerMobileController extends Controller
             'pin'   => 'required|string|min:4|max:6',
         ]);
 
-        $phone = preg_replace('/[\s\-]/', '', $request->phone);
+        $raw   = preg_replace('/[\s\-]/', '', $request->phone);
+        $local = '0' . substr($raw, -9); // e.g. 0701111001
 
-        $customer = Customer::where('phone', $phone)
-            ->orWhere('phone', ltrim($phone, '+'))
-            ->orWhere('phone', '0' . substr($phone, -9))
+        $customer = Customer::where('phone', $raw)
+            ->orWhere('phone', $local)
+            ->orWhere('phone', ltrim($raw, '+'))
             ->first();
 
         if (! $customer || ! $customer->verifyPin($request->pin)) {
@@ -31,16 +37,19 @@ class CustomerMobileController extends Controller
         }
 
         if (! $customer->is_active) {
-            return response()->json(['message' => 'Your account has been deactivated. Contact your agent.'], 403);
+            return response()->json(['message' => 'Account deactivated. Contact your agent.'], 403);
         }
 
-        // Revoke old mobile tokens then issue a fresh one
         $customer->tokens()->where('name', 'mobile')->delete();
         $token = $customer->createToken('mobile', ['*'], now()->addDays(30))->plainTextToken;
 
         return response()->json([
             'token'    => $token,
-            'customer' => $this->formatProfile($customer),
+            'customer' => $this->formatProfile($customer->load([
+                'agent:id,name',
+                'ratePlan:id,name,amount,unit',
+                'devices' => fn($q) => $q->latest()->limit(1),
+            ])),
         ]);
     }
 
@@ -50,11 +59,35 @@ class CustomerMobileController extends Controller
         return response()->json(['message' => 'Logged out.']);
     }
 
+    public function setPin(Request $request)
+    {
+        $request->validate([
+            'phone'      => 'required|string',
+            'account_no' => 'required|string',
+            'pin'        => 'required|string|min:4|max:6|confirmed',
+        ]);
+
+        $customer = Customer::where('phone', $request->phone)
+            ->where('account_no', $request->account_no)
+            ->first();
+
+        if (! $customer) {
+            return response()->json(['message' => 'No customer found. Check phone and account number.'], 404);
+        }
+
+        $customer->update(['pin' => $request->pin]);
+        return response()->json(['message' => 'PIN set. You can now log in.']);
+    }
+
+    // ── Profile ───────────────────────────────────────────────────────────────
+
     public function profile(Request $request)
     {
         $customer = $this->resolveCustomer($request);
         return response()->json(['data' => $this->formatProfile($customer)]);
     }
+
+    // ── Transactions ──────────────────────────────────────────────────────────
 
     public function transactions(Request $request)
     {
@@ -75,8 +108,7 @@ class CustomerMobileController extends Controller
                 'created_at'       => $t->created_at,
             ]);
 
-        // Also include recent deductions from credit_ledger
-        $deductions = \Illuminate\Support\Facades\DB::table('credit_ledger')
+        $deductions = DB::table('credit_ledger')
             ->where('customer_id', $customer->id)
             ->where('type', 'DEDUCTION')
             ->latest('created_at')
@@ -101,61 +133,113 @@ class CustomerMobileController extends Controller
         return response()->json(['data' => $all]);
     }
 
+    // ── Top-up (M-Pesa STK Push) ──────────────────────────────────────────────
+
     public function topup(Request $request)
     {
-        $request->validate([
-            'amount' => 'required|numeric|min:50|max:70000',
-            'phone'  => 'required|string',
+        $data = $request->validate([
+            'amount' => 'required|numeric|min:1|max:150000',
+            'phone'  => 'required|string|max:20',
         ]);
 
         $customer = $this->resolveCustomer($request);
-        $phone    = preg_replace('/[\s\-]/', '', $request->phone);
+        $amount   = (int) ceil($data['amount']); // M-Pesa requires whole KES
 
+        // 1. Create a PENDING transaction so the callback can look it up
+        $transaction = Transaction::create([
+            'customer_id'    => $customer->id,
+            'agent_id'       => null,
+            'amount'         => $amount,
+            'credit_added'   => $amount,
+            'payment_method' => 'MPESA',
+            'status'         => 'PENDING',
+            'notes'          => 'Self-service via mobile app',
+        ]);
+
+        // 2. Initiate STK Push
         try {
-            $mpesa = app(MpesaService::class);
-            $result = $mpesa->initiateSTKPush(
-                phone: $phone,
-                amount: (int) $request->amount,
-                accountReference: $customer->account_no ?? "GP-{$customer->id}",
-                description: 'GasPay top-up',
-                callbackUrl: config('app.url') . '/api/payments/mpesa/callback',
+            $mpesa             = app(MpesaService::class);
+            $checkoutRequestId = $mpesa->initiateSTKPush(
+                phone:           $data['phone'],
+                amount:          $amount,
+                accountRef:      $customer->account_no ?? ('GP-' . $customer->id),
+                transactionDesc: 'GasPay top-up',
             );
 
+            $transaction->update([
+                'mpesa_checkout_request_id' => $checkoutRequestId,
+            ]);
+
             return response()->json([
-                'success'              => true,
-                'message'              => "STK Push sent to {$phone}. Enter your M-Pesa PIN.",
-                'checkout_request_id'  => $result['CheckoutRequestID'] ?? null,
+                'success'             => true,
+                'message'             => 'STK Push sent. Enter your M-Pesa PIN on your phone.',
+                'transaction_id'      => $transaction->id,
+                'checkout_request_id' => $checkoutRequestId,
             ]);
         } catch (\Throwable $e) {
+            $transaction->update(['status' => 'FAILED']);
+            Log::error('Mobile top-up STK push failed', [
+                'customer_id' => $customer->id,
+                'amount'      => $amount,
+                'error'       => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => 'Top-up failed: ' . $e->getMessage(),
+                'message' => 'Could not initiate payment: ' . $e->getMessage(),
             ], 422);
         }
     }
 
-    public function setPin(Request $request)
+    public function topupStatus(Request $request, string $checkoutRequestId)
     {
-        $request->validate([
-            'phone'       => 'required|string',
-            'account_no'  => 'required|string',
-            'pin'         => 'required|string|min:4|max:6|confirmed',
-        ]);
-
-        $customer = Customer::where('phone', $request->phone)
-            ->where('account_no', $request->account_no)
+        $customer    = $this->resolveCustomer($request);
+        $transaction = Transaction::where('mpesa_checkout_request_id', $checkoutRequestId)
+            ->where('customer_id', $customer->id)
             ->first();
 
-        if (! $customer) {
-            return response()->json(['message' => 'Customer not found. Check phone and account number.'], 404);
+        if (! $transaction) {
+            return response()->json(['status' => 'NOT_FOUND'], 404);
         }
 
-        $customer->update(['pin' => $request->pin]);
+        if ($transaction->status === 'PENDING') {
+            // Optionally query Daraja directly for fresh status
+            try {
+                $mpesa  = app(MpesaService::class);
+                $result = $mpesa->querySTKPush($checkoutRequestId);
+                $code   = $result['ResultCode'] ?? null;
 
-        return response()->json(['message' => 'PIN set successfully. You can now log in.']);
+                if ($code === 0 || $code === '0') {
+                    // Payment was received but callback may have been missed — handle it here
+                    if ($transaction->status === 'PENDING') {
+                        $transaction->update(['status' => 'COMPLETED']);
+                        app(\App\Services\PaygService::class)->addCredit(
+                            $customer->fresh(),
+                            (float) $transaction->amount,
+                            $transaction->id,
+                        );
+                    }
+                } elseif ($code !== null && $code !== 0) {
+                    $transaction->update(['status' => 'FAILED']);
+                }
+            } catch (\Throwable $e) {
+                // Query failed — return current DB status
+                Log::warning('STK query failed', ['error' => $e->getMessage()]);
+            }
+        }
+
+        $transaction->refresh();
+
+        return response()->json([
+            'status'           => $transaction->status,
+            'amount'           => (float) $transaction->amount,
+            'mpesa_receipt_no' => $transaction->mpesa_receipt_no,
+            'credit_balance'   => (float) $customer->fresh()->credit_balance,
+        ]);
     }
 
-    // -------------------------------------------------------------------------
+    // ── Internals ─────────────────────────────────────────────────────────────
+
     private function resolveCustomer(Request $request): Customer
     {
         $tokenable = $request->user('sanctum');

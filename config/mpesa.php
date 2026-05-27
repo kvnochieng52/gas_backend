@@ -1,10 +1,14 @@
 <?php
 
+// MPESA_SANDBOX=false  → production  (https://api.safaricom.co.ke)
+// MPESA_SANDBOX=true   → sandbox     (https://sandbox.safaricom.co.ke)
+$isSandbox = filter_var(env('MPESA_SANDBOX', true), FILTER_VALIDATE_BOOLEAN);
+
 return [
-    'environment' => env('MPESA_ENVIRONMENT', 'sandbox'),
-    'consumer_key' => env('MPESA_CONSUMER_KEY', ''),
+    'environment'     => $isSandbox ? 'sandbox' : 'production',
+    'consumer_key'    => env('MPESA_CONSUMER_KEY', ''),
     'consumer_secret' => env('MPESA_CONSUMER_SECRET', ''),
-    'shortcode' => env('MPESA_SHORTCODE', '174379'),
-    'passkey' => env('MPESA_PASSKEY', 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919'),
-    'callback_url' => env('MPESA_CALLBACK_URL', 'https://yourdomain.com/api/payments/mpesa/callback'),
+    'shortcode'       => env('MPESA_SHORT_CODE', env('MPESA_SHORTCODE', '174379')),
+    'passkey'         => env('MPESA_PASSKEY', ''),
+    'callback_url'    => env('MPESA_CALLBACK_URL', ''),
 ];
