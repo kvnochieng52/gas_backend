@@ -12,12 +12,12 @@ class AdminUserSeeder extends Seeder
     {
         $adminRole = Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
 
-        $admin = User::firstOrCreate(
+        $admin = User::updateOrCreate(
             ['email' => 'admin@greenwell.com'],
             [
                 'name'      => 'Admin',
                 'phone'     => '0700000001',
-                'password'  => bcrypt('password'),
+                'password'  => 'password',
                 'is_active' => true,
             ]
         );

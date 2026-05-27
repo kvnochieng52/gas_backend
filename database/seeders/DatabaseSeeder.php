@@ -14,23 +14,23 @@ class DatabaseSeeder extends Seeder
         $adminRole = Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
         $agentRole = Role::firstOrCreate(['name' => 'agent', 'guard_name' => 'web']);
 
-        $admin = User::firstOrCreate(
+        $admin = User::updateOrCreate(
             ['email' => 'admin@gasplatform.com'],
             [
-                'name' => 'System Admin',
-                'phone' => '0700000000',
-                'password' => bcrypt('Admin@1234'),
+                'name'      => 'System Admin',
+                'phone'     => '0700000000',
+                'password'  => 'Admin@1234',
                 'is_active' => true,
             ]
         );
         $admin->assignRole($adminRole);
 
-        $agent = User::firstOrCreate(
+        $agent = User::updateOrCreate(
             ['email' => 'agent@gasplatform.com'],
             [
-                'name' => 'Field Agent',
-                'phone' => '0711111111',
-                'password' => bcrypt('Agent@1234'),
+                'name'      => 'Field Agent',
+                'phone'     => '0711111111',
+                'password'  => 'Agent@1234',
                 'is_active' => true,
             ]
         );
