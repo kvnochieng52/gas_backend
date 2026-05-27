@@ -183,6 +183,7 @@ class SampleDataSeeder extends Seeder
                     'rate_plan_id' => $ratePlanId,
                     'credit_balance' => $balance,
                     'is_active'    => true,
+                    'pin'          => '1234',
                 ]
             );
 

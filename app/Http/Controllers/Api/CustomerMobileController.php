@@ -210,14 +210,14 @@ class CustomerMobileController extends Controller
                 $code   = $result['ResultCode'] ?? null;
 
                 if ($code === 0 || $code === '0') {
-                    // Payment was received but callback may have been missed — handle it here
+                    // Callback may have been missed — credit via polling
                     if ($transaction->status === 'PENDING') {
-                        $transaction->update(['status' => 'COMPLETED']);
                         app(\App\Services\PaygService::class)->addCredit(
                             $customer->fresh(),
                             (float) $transaction->amount,
                             $transaction->id,
                         );
+                        $transaction->update(['status' => 'COMPLETED']);
                     }
                 } elseif ($code !== null && $code !== 0) {
                     $transaction->update(['status' => 'FAILED']);

@@ -88,12 +88,20 @@ class PaymentController extends Controller
             $metadata = collect($body['CallbackMetadata']['Item'] ?? [])
                 ->pluck('Value', 'Name');
 
-            $transaction->update([
-                'status' => 'COMPLETED',
-                'mpesa_receipt_no' => $metadata->get('MpesaReceiptNumber'),
-            ]);
+            // Only add credit once — guard against duplicate callbacks
+            if ($transaction->status === 'PENDING') {
+                $transaction->update([
+                    'status' => 'COMPLETED',
+                    'mpesa_receipt_no' => $metadata->get('MpesaReceiptNumber'),
+                ]);
 
-            $this->payg->addCredit($transaction->customer, $transaction->amount, $transaction->id);
+                $this->payg->addCredit($transaction->customer, $transaction->amount, $transaction->id);
+            } else {
+                // Already processed — just update the receipt number if missing
+                if (! $transaction->mpesa_receipt_no) {
+                    $transaction->update(['mpesa_receipt_no' => $metadata->get('MpesaReceiptNumber')]);
+                }
+            }
         } else {
             $transaction->update(['status' => 'FAILED']);
         }

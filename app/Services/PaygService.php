@@ -47,9 +47,14 @@ class PaygService
             if ($balanceBefore < $minBalance && $balanceAfter >= $minBalance) {
                 $this->openCustomerValves($customer);
             }
-
-            broadcast(new CreditUpdated($customer->fresh(), $amount, 'TOP_UP'));
         });
+
+        // Broadcast outside the DB transaction so a websocket failure never rolls back the credit
+        try {
+            broadcast(new CreditUpdated($customer->fresh(), $amount, 'TOP_UP'));
+        } catch (\Throwable) {
+            // Non-critical — credit is already saved
+        }
     }
 
     public function deductCredit(Device $device, float $weightUsedKg): void
